@@ -1,7 +1,36 @@
 # 🎓 CampusHire — University Placement Cell Mobile Application
 > **Comprehensive Architecture, Feature Specification & Development Roadmap**  
 > **Platform:** React Native (Expo Managed Workflow)  
-> **Target OS:** Android & iOS (Cross-Platform)
+> **Target OS:** Android & iOS (Cross-Platform)  
+> **Institution:** Dr. Hari Singh Gour Central University, Sagar, Madhya Pradesh
+
+---
+
+## ⚠️ Implementation Status — Read This First
+
+> **The current build has NO database and NO backend. All data is in-memory demo data.**
+>
+> This document originally described a production architecture (PostgreSQL + Express API).
+> That backend **has not been built yet**. What exists today is a complete, fully interactive
+> front-end that runs entirely on seeded local data.
+>
+> | Layer | Planned | Currently Built |
+> | :--- | :--- | :--- |
+> | UI / Screens | 18 screens | ✅ **18 screens — all built and working** |
+> | Eligibility engine | Pure function | ✅ **Built and unit-reasoned** |
+> | ATS tracker | Stepper UI | ✅ **Built** |
+> | CSV export | File generation + share | ✅ **Built (hand-rolled, no library)** |
+> | Database | PostgreSQL | ❌ **Not built — dummy data** |
+> | API server | Express + pg | ❌ **Not built** |
+> | Authentication | Email/password + JWT | ❌ **Role switcher only (no real login)** |
+> | Push notifications | Backend triggers | ⚠️ **Local scheduling only** |
+>
+> **What this means in practice:** every screen is functional and demonstrable, but data resets
+> when the app reloads. Nothing persists. The backend is the next phase — see §10.
+>
+> The data layer was deliberately structured for this: `src/lib/types.ts` mirrors the database
+> schema, and all state mutations are isolated in the store's action functions, so swapping
+> demo data for real API calls does not require rewriting any screen.
 
 ---
 
@@ -58,6 +87,10 @@ graph TD
 ---
 
 ## 3. Comprehensive Feature Matrix
+
+> **Legend:** ✅ implemented and working · ⚠️ partially implemented · ⬜ not started
+> The "Implementation Details" column reflects what was **actually built**, which in several
+> cases differs from the original recommendation.
 
 ### 3.1. Student Modules
 
@@ -136,30 +169,7 @@ export function evaluateEligibility(
       studentValue: student.cgpa.toFixed(2),
       requiredValue: `≥ ${criteria.minCgpa}`,
     },
-    {
-      rule: 'Eligible Branches',
-      passed: criteria.allowedBranches.includes(student.branch),
-      studentValue: student.branch,
-      requiredValue: criteria.allowedBranches.join(', '),
-    },
-    {
-      rule: 'Active Backlogs',
-      passed: student.activeBacklogs <= criteria.maxActiveBacklogs,
-      studentValue: student.activeBacklogs,
-      requiredValue: `≤ ${criteria.maxActiveBacklogs}`,
-    },
-    {
-      rule: 'Class 10th Percentage',
-      passed: student.tenthPercentage >= criteria.minTenthMarks,
-      studentValue: `${student.tenthPercentage}%`,
-      requiredValue: `≥ ${criteria.minTenthMarks}%`,
-    },
-    {
-      rule: 'Class 12th / Diploma Percentage',
-      passed: student.twelfthPercentage >= criteria.minTwelfthMarks,
-      studentValue: `${student.twelfthPercentage}%`,
-      requiredValue: `≥ ${criteria.minTwelfthMarks}%`,
-    },
+    // …
   ];
 
   const isEligible = reasons.every((r) => r.passed);
@@ -167,49 +177,125 @@ export function evaluateEligibility(
 }
 ```
 
+> **Note:** the code above is the original sketch. The **implemented** engine differs
+> deliberately — see §4.1 for what shipped and why it is stronger.
+
+### 4.1 As Implemented
+
+The shipped engine (`src/lib/eligibility.ts`) returns far more than a boolean:
+
+```typescript
+type EligibilityResult = {
+  isEligible: boolean;
+  score: number;                        // pass ratio, 0–100
+  passedCount: number;
+  totalRules: number;
+  reasons: EligibilityRuleResult[];     // EVERY rule, passing and failing
+  failures: string[];                   // named failures, for the Apply tooltip
+  warnings: string[];                   // policy issues that should not hard-block
+};
+```
+
+Four design decisions that make this defensible in an evaluation:
+
+1. **It returns every rule, not just the failures.** A student who is ineligible can see
+   *exactly* which single requirement they missed and by how much. A bare `false` would
+   force them to email the placement cell.
+
+2. **Failures and warnings are separated.** A backlog warning from college policy is
+   informational; failing the CGPA cutoff is disqualifying. Collapsing these into one
+   boolean would block students who are legitimately allowed to apply.
+
+3. **It is pure.** No React, no I/O, no side effects. This makes it directly unit-testable
+   in isolation and reusable from both portals — the student UI uses it to gate the Apply
+   button, and the TPO dashboard uses the same function to report applicant quality. One
+   source of truth for the business rule.
+
+4. **It is the single enforcement point.** Ineligibility is enforced inside the store's
+   `applyToDrive` action, not merely disabled in the UI. A disabled button is a UI
+   convention; a server-side check is a guarantee. When the backend lands, this same
+   function should be invoked there too.
+
+**Demonstration path:** sign in as the demo student (Sarthak Upadhyay, CGPA 8.5) and open
+the **Goldman Sachs** drive — a female-only diversity hire. The scorecard shows
+`✕ Gender Criteria`, the Apply button is disabled, and the reason is named on screen.
+
 ---
 
 ## 5. System Architecture & Tech Stack
 
+### 5.1 Current Architecture — As Built
+
+> The client talks to **nothing**. There is no server and no database in this build.
+
 ```mermaid
 graph LR
-    subgraph Client ["Client: React Native (Expo)"]
-        UI[Expo Router / Navigation]
-        Store[Zustand State Store]
-        Query[TanStack React Query]
-        Native[Expo APIs: Notifications, Sharing, Docs]
-    end
-
-    subgraph Backend ["Backend & Database (Supabase / Node.js)"]
-        AuthService[Auth & Role Claims]
-        Postgres[(PostgreSQL Database)]
-        StorageBucket[Storage: Resumes & JDs]
-        EdgeFunc[Edge Functions / Triggers]
+    subgraph Client ["Client: React Native (Expo) — the entire current system"]
+        UI["Expo Router<br/>(18 screens)"]
+        Store["React Context Store<br/>(useStore)"]
+        Engine["Eligibility Engine<br/>(pure functions)"]
+        Demo["Demo Data<br/>(src/lib/demo-data.ts)"]
+        Native["Expo APIs<br/>Notifications · Sharing · Document Picker"]
     end
 
     UI --> Store
-    Store --> Query
-    Query -->|REST / GraphQL / Supabase SDK| AuthService
-    Query -->|CRUD| Postgres
-    Native -->|Upload PDF| StorageBucket
-    EdgeFunc -->|Push Notification| Native
+    Store --> Engine
+    Store --> Demo
+    UI --> Native
+
+    style Demo fill:#f7d9d9,stroke:#c0392b,stroke-dasharray: 4 3
+    style Engine fill:#d9f0e4,stroke:#15803D
 ```
 
-### Technology Selections
+The dashed red box is the part that gets replaced in Phase 7.
 
-| Layer | Recommended Choice | Rationale |
+### 5.2 Target Architecture — After Phase 7
+
+```mermaid
+graph LR
+    subgraph Client ["Client: React Native (Expo)"]
+        UI2[Expo Router / Navigation]
+        Store2[React Context Store]
+        Query[TanStack React Query]
+        API["API Client<br/>(src/lib/api.ts)"]
+        Native2[Expo APIs: Notifications, Sharing, Docs]
+    end
+
+    subgraph Backend ["Backend — Express + pg (NOT YET BUILT)"]
+        AuthService[Auth & JWT Role Claims]
+        Routes[REST Routes]
+        Postgres[(PostgreSQL Database)]
+    end
+
+    UI2 --> Store2
+    Store2 --> Query
+    Query -->|HTTP| AuthService
+    Query -->|HTTP| Routes
+    Routes --> Postgres
+    Native2 -->|Push Notification| Routes
+```
+
+### 5.3 Technology Selections — As Built vs Planned
+
+| Layer | Actually Used | Rationale / Change |
 | :--- | :--- | :--- |
-| **Framework** | **React Native (Expo SDK 51+)** | Rapid cross-platform prototyping, hot reload, no native Android Studio/Xcode compiling needed for demos. |
-| **Routing** | **Expo Router v3** (File-based) | Intuitive file-based navigation (like Next.js) supporting nested tabs and modals out-of-the-box. |
-| **Styling** | **NativeWind (Tailwind CSS)** | Modern, fast, and consistent design system with dark mode support. |
-| **State Management** | **Zustand** + **TanStack Query** | Lightweight global store for user session + automatic server cache, refetching, and pagination. |
-| **Backend & Auth** | **Supabase (PostgreSQL)** | Instant database, Row Level Security (RLS) for multi-tenancy, file storage for resumes, and real-time updates. |
-| **Form Management** | **React Hook Form + Zod** | High performance with zero unnecessary re-renders; robust schema validation for student forms. |
-| **File Handling** | **`expo-document-picker` & `expo-sharing`** | Enables students to select and upload resumes and TPOs to export CSV sheets to WhatsApp/Drive. |
+| **Framework** | React Native (Expo SDK 57) | Original plan said SDK 51+. SDK 57 ships React 19.2 and React Compiler. |
+| **Routing** | Expo Router (file-based) | Unchanged. JS `Tabs` navigator, **not** `NativeTabs` — see §10.4. |
+| **Styling** | `StyleSheet` + theme tokens | **Changed from NativeWind.** Less build complexity at this scale. |
+| **Typography** | Playfair Display + Inter | Editorial serif/sans pairing, loaded via `expo-font`. |
+| **State** | React Context | **Changed from Zustand.** No server cache exists yet to justify it. |
+| **Forms** | React Hook Form + Zod | Unchanged, as planned. |
+| **Data** | In-memory demo data | **Backend not built.** See §10. |
+| **CSV export** | Hand-rolled + `expo-sharing` | **Changed from `xlsx`** — high-severity advisory, unpublished package. |
+| **Visual effects** | `expo-blur`, `expo-linear-gradient` | Added for the glassmorphism design system. |
 
 ---
 
-## 6. Database Schema Design (PostgreSQL / Supabase)
+## 6. Database Schema Design (PostgreSQL) — Designed, Not Yet Implemented
+
+> **This section is a design specification, not a description of working code.**
+> No database exists in the current build. The schema below is what Phase 7 will implement,
+> and `src/lib/types.ts` already mirrors it in TypeScript so the mapping is close to mechanical.
 
 ### 6.1. Entity Relationship (ER) Diagram
 
@@ -356,55 +442,74 @@ app/
 
 ---
 
-## 8. Step-by-Step Implementation Roadmap (6 Sprints)
+## 8. Implementation Roadmap — Actual Status
 
-### 🗓️ Sprint 1: Project Scaffolding & Design System (Days 1–3)
-- Initialize Expo project (`npx create-expo-app@latest -t tabs`).
-- Setup **NativeWind (Tailwind CSS)** and typography design tokens.
-- Configure color palette:
-  - **Brand Primary**: Deep Indigo `#4F46E5`
-  - **Success / Eligible**: Emerald Green `#10B981`
-  - **Warning / Pending**: Amber `#F59E0B`
-  - **Danger / Ineligible**: Rose `#EF4444`
-  - **Dark Mode Background**: `#0F172A`
-- Create reusable UI primitives: `Button`, `Card`, `Badge`, `Input`, `StatCard`, `EmptyState`.
+> Sprint 1–5 were re-scoped during implementation to match the decisions actually taken.
+> The deviations are noted honestly rather than retro-fitted.
 
-### 🗓️ Sprint 2: Authentication & Profile Engine (Days 4–7)
-- Multi-role Auth screen (Student vs TPO Switcher).
-- Student Onboarding Wizard:
-  - Personal Information $\rightarrow$ Academic Metrics $\rightarrow$ Document Upload.
-- PDF resume selection using `expo-document-picker`.
-- State storage in **Zustand** with persistent cache.
+### ✅ Phase 1 — Project Scaffolding & Design System (Complete)
+- Initialised Expo SDK 57 project with Expo Router (file-based navigation).
+- **Deviation from original plan:** chose plain `StyleSheet` + theme tokens over
+  **NativeWind/Tailwind**. Tailwind adds a Babel/Metro configuration layer for modest gain
+  at this scale; the token system gives the same consistency with less indirection.
+- **Deviation:** chose a **monochrome editorial** palette over the original indigo/vibrant
+  scheme. Greyscale throughout, with colour reserved strictly for semantic meaning
+  (green = eligible, red = ineligible, amber = deadline).
+  - Light mode: `#FFFFFF` surface, `#0A0A0A` ink
+  - Dark mode: `#000000` surface, `#FAFAFA` ink
+- Typography: **Playfair Display** (display serif) + **Inter** (UI sans), loaded via
+  `expo-font`. Negative letter-spacing on display sizes; wide-tracked uppercase micro-labels.
+- Surfaces: **glassmorphism** (`expo-blur`) on the tab bar and hero panels, plus a restrained
+  four-step **elevation scale** for depth hierarchy.
+- UI kit built: `Txt`, `Display`, `Eyebrow`, `Card`, `Glass`, `Badge`, `Button`, `Input`,
+  `Chip`, `Logo`, `ProgressBar`, `EmptyState`, `Section`, `RowLink`, `Toast`, `Screen`.
 
-### 🗓️ Sprint 3: Drive Feed & Automated Eligibility Engine (Days 8–12)
-- Placement drive listing screen with search, chip filters (Tier, Branch, Open status).
-- Job Detail Screen with countdown timer to deadline.
-- Build the **Eligibility Engine logic**:
-  - Live comparison card displaying pass/fail indicators for each requirement.
-  - Disable "Apply" button with custom tooltip if ineligible.
-  - One-tap submission with optimistic UI update.
+### ✅ Phase 2 — Role-Based Access & Profile (Complete, simplified)
+- Multi-role entry screen (Student / Placement Officer / Coordinator) — each opens a
+  **completely separate portal** via route-level redirects.
+- **Deviation:** there is **no real authentication**. No password, no JWT, no session.
+  Role selection is a local state toggle. Real auth is deferred to the backend phase.
+- Academic profile screen with live scorecard and resume upload via `expo-document-picker`.
+- State: **React Context**, not Zustand — chosen because there is no server cache to
+  synchronise yet. Revisit when the API lands.
 
-### 🗓️ Sprint 4: ATS Application Tracker & Prep Hub (Days 13–16)
-- **Application Pipeline Screen**:
-  - Interactive stepper component displaying: `Applied` $\rightarrow$ `OA` $\rightarrow$ `Interview` $\rightarrow$ `Result`.
-  - Specific details per stage (e.g., date, venue, test link, reporting time).
-- **Prep Hub**:
-  - Searchable list of company interview experiences.
-  - Detail screen with round breakdown and senior advice.
+### ✅ Phase 3 — Drive Feed & Automated Eligibility Engine (Complete)
+- Drive feed with search, tier chips (Super Dream / Dream / Regular / Internship) and
+  status filters. Every card pre-computes and displays an eligibility verdict.
+- Drive detail screen with deadline countdown, CTC breakdown, and the **eligibility scorecard**.
+- **Eligibility engine** (`src/lib/eligibility.ts`) — pure, deterministic, side-effect free:
+  - Returns *every* rule (passing and failing), not a bare boolean.
+  - Computes a pass ratio score and a named failure list.
+  - Separate `warnings[]` for policy issues that shouldn't hard-block (e.g. offer-count limits).
+  - Gates the Apply button and names the exact failed rule.
+  - Because it is pure, it is directly unit-testable and reusable by both portals.
 
-### 🗓️ Sprint 5: TPO Admin Management & CSV Exporter (Days 17–20)
-- TPO Dashboard with live summary cards (Placed %, Active Drives, Total Offers).
-- Create Placement Drive form with multi-select branch tags and criteria inputs.
-- Applicant list view with filtering:
-  - Instant CGPA slider filter.
-  - Export filtered list to **Excel / CSV** using `xlsx` and share via `expo-sharing`.
-- Notice Board composer with broadcast tags.
+### ✅ Phase 4 — ATS Tracker & Prep Hub (Complete)
+- **Pipeline stepper**: `Applied → OA → Tech 1 → Tech 2 → HR → Offer`, with completed /
+  current / pending / rejected states, plus per-stage venue, reporting time, test link.
+- Applications list split into Active and History.
+- Prep hub: searchable, difficulty-filtered senior interview experiences with round-by-round
+  breakdowns and upvoting.
 
-### 🗓️ Sprint 6: Polish, Mock Data, Testing & Presentation Prep (Days 21–24)
-- Populate rich mock data (e.g., Google, Microsoft, TCS, Infosys, Deloitte drives).
-- Polish micro-animations using `react-native-reanimated`.
-- Dark mode toggle verification.
-- Prepare demo script highlighting the Eligibility Engine and CSV export for evaluators.
+### ✅ Phase 5 — TPO Admin & CSV Export (Complete)
+- Analytics dashboard: placement %, branch-wise rates, CTC distribution (pure `View` bars).
+- 4-step drive creation wizard using **react-hook-form + zod**, with per-step validation,
+  multi-select branch tags and dynamic round builder.
+- Applicant table with CGPA / branch / stage / backlog filtering and multi-select.
+- **CSV export** — hand-rolled generator in `src/lib/csv.ts` with correct quote escaping,
+  written to cache and handed to `expo-sharing` for the native share sheet.
+  - **Deviation:** dropped the planned `xlsx` dependency. It carries a high-severity advisory
+    and has been unpublished from npm. A comma-separated file needs ~40 lines of code, not a
+    dependency with a vulnerability report attached.
+
+### ⚠️ Phase 6 — Polish & Data (Partially Complete)
+- Rich demo data: 10 realistic drives (Google, Microsoft, Amazon, Adobe, Goldman Sachs,
+  Deloitte, TCS, Infosys, Zoho, Accenture) and a generated 60-student directory.
+- Dark mode verified across both palettes.
+- **Not done:** automated tests, `react-native-reanimated` micro-animations.
+
+### 📋 Phase 7 — Backend (Not Started)
+See §10 for the detailed plan.
 
 ---
 
@@ -413,5 +518,159 @@ app/
 1. **Practical Real-World Utility**: Solves a direct campus pain point that university evaluators face every semester.
 2. **Deterministic Business Logic**: Not just a simple CRUD app; includes automated mathematical eligibility validation based on multi-variable criteria.
 3. **Data Export Capability**: Evaluators love seeing the app generate an actual CSV file ready to send to corporate HR recruiters.
-4. **Professional Visual Polish**: Visual ATS application stepper, clear status badges, and responsive UI components.
+4. **Professional Visual Polish**: Visual ATS application stepper, clear status badges, glassmorphism surfaces, and a coherent monochrome editorial design system.
 5. **Role-Based Flexibility**: One codebase serving both the student seeker and the university administration.
+
+---
+
+## 10. Phase 7 — Backend Roadmap (Not Yet Built)
+
+This is the next phase. It is specified here so the architecture is already agreed.
+
+### 10.1 Why a separate API server
+React Native cannot talk to PostgreSQL directly — there is no Postgres wire protocol in the
+client. A thin HTTP API is therefore required. It will live in a sibling `server/` folder
+using **Express + `pg`**, keeping the chosen stack intact (no Supabase or other managed
+service).
+
+### 10.2 Planned structure
+```
+server/
+├── src/
+│   ├── index.ts            # Express app
+│   ├── db.ts               # pg Pool
+│   ├── routes/
+│   │   ├── auth.ts         # register, login, JWT issue
+│   │   ├── students.ts
+│   │   ├── drives.ts
+│   │   ├── applications.ts
+│   │   ├── announcements.ts
+│   │   └── experiences.ts
+│   └── middleware/
+│       └── auth.ts         # verify JWT, attach role
+├── migrations/
+│   ├── 001_schema.sql      # tables per §6 ER diagram
+│   └── 002_seed.sql        # demo rows
+└── .env.example
+```
+
+### 10.3 Migration checklist
+1. `docker-compose.yml` for PostgreSQL, plus `schema.sql` implementing §6 and `seed.sql`.
+2. Express server with a `pg` pool and CORS.
+3. Real authentication: `bcrypt` password hashing + JWT claims carrying the role.
+   Replace the role switcher in `src/app/index.tsx` with a login form.
+4. Implement each route; return data in the exact shapes already defined in
+   `src/lib/types.ts`.
+5. Add a thin API client (`src/lib/api.ts`); repoint the store's actions at it.
+6. Delete `src/lib/demo-data.ts` once real data is live.
+
+### 10.4 Known risks
+- **`NativeTabs` silently drops `router.push` to nested routes.** Detail screens
+  (`/drives/[id]`, `/applications/tracker`) are registered in the JS `Tabs` navigator with
+  `href: null`. Reverting to `NativeTabs` would break navigation with no error surfaced.
+- **Generated route types go stale.** After adding or renaming a route,
+  `.expo/types/router.d.ts` must be regenerated (`npx expo export --platform web`) or the
+  type checker reports phantom route errors.
+- **No hardcoded colours.** All colours must come from `useTheme()`. Seven hardcoded hex
+  values silently broke dark mode before this rule was established.
+
+---
+
+## 11. Known Limitations (Honest Accounting)
+
+| Limitation | Impact | Fix |
+| :--- | :--- | :--- |
+| **No database** | All data resets on reload | Phase 7 |
+| **No backend** | Nothing persists or syncs | Phase 7 |
+| **No real auth** | Role switcher, not a login | Phase 7 |
+| **No automated tests** | Regressions caught manually | Add Vitest for the eligibility engine first |
+| **No animations** | Static transitions | `react-native-reanimated` |
+| **Notifications need a dev build** | Silent no-op in Expo Go | Documented; calls are guarded |
+| **Bulk round advancement is stubbed** | Selection UI exists, mutation does not | Needs the backend |
+
+The most valuable next test to write is for `evaluateEligibility` — it is pure, so it is
+cheap to test and it is the piece that carries the project's credibility.
+
+---
+
+## 12. Repository Structure (As Built)
+
+```
+mobile-app/
+├── src/
+│   ├── app/                        # Expo Router — the folder structure IS the navigation
+│   │   ├── _layout.tsx             # Root: fonts, splash, StoreProvider
+│   │   ├── index.tsx               # Login + role picker
+│   │   ├── (student)/
+│   │   │   ├── _layout.tsx         # 5 tabs + 3 hidden nested routes
+│   │   │   ├── home.tsx            # Dashboard
+│   │   │   ├── drives/
+│   │   │   │   ├── index.tsx       #   Feed with filters
+│   │   │   │   └── [id].tsx        #   Detail + eligibility scorecard
+│   │   │   ├── applications/
+│   │   │   │   ├── index.tsx       #   Active / History
+│   │   │   │   └── tracker.tsx     #   ATS pipeline stepper
+│   │   │   ├── prep/
+│   │   │   │   ├── index.tsx       #   Interview experiences
+│   │   │   │   └── [id].tsx        #   Round breakdown
+│   │   │   └── profile/index.tsx   # Academic scorecard + resume
+│   │   └── (admin)/
+│   │       ├── _layout.tsx         # 4 tabs + 2 hidden nested routes
+│   │       ├── dashboard.tsx       # Placement analytics
+│   │       ├── drives/
+│   │       │   ├── index.tsx       #   Manage drives
+│   │       │   ├── create.tsx      #   4-step creation wizard
+│   │       │   └── applicants.tsx  #   Filter table + CSV export
+│   │       ├── broadcasts.tsx      # Notice board
+│   │       └── students.tsx        # Student directory
+│   ├── components/
+│   │   ├── ui-kit.tsx              # Design system
+│   │   ├── eligibility-scorecard.tsx
+│   │   └── pipeline-stepper.tsx
+│   ├── constants/theme.ts          # Colour, type, elevation, glass tokens
+│   ├── hooks/                      # use-theme, use-color-scheme
+│   └── lib/
+│       ├── eligibility.ts          # ★ The eligibility engine (pure)
+│       ├── demo-data.ts            # ★ Seed data — replaced in Phase 7
+│       ├── store.tsx               # ★ All state mutations live here
+│       ├── types.ts                # Domain types (mirror the DB schema)
+│       ├── csv.ts                  # CSV generation + share
+│       └── notifications.ts        # Guarded local notifications
+├── package.json
+├── app.json
+└── PLACEMENT_CELL_APP_PLAN.md
+```
+
+★ = the three files that define the swap boundary. Replacing demo data with a real API
+means rewriting `demo-data.ts` and the bodies of `store.tsx`'s actions — **no screen changes.**
+
+### 12.1 How to Run
+
+```bash
+npm install
+npx expo start      # scan QR with Expo Go, or press w for the browser
+npx tsc --noEmit    # verify type safety
+```
+
+### 12.2 Demo Accounts
+
+| Role | User | Portal |
+| :--- | :--- | :--- |
+| Student | Sarthak Upadhyay — CSE, CGPA 8.5 | Drives, eligibility, ATS, prep hub |
+| Placement Officer | Dr. Anjali Verma | Analytics, drives, applicants, CSV export |
+| Student Coordinator | Rohit Sharma | Broadcasts, campus notices |
+
+### 12.3 Suggested Demo Script (for evaluation)
+
+1. **Login** — switch between Student and Placement Officer to show role separation.
+2. **Drives feed** — point out that every card already carries a computed eligibility verdict.
+3. **Goldman Sachs drive** — the centrepiece. Show the scorecard failing on *Gender Criteria*,
+   the disabled Apply button, and the named reason. This demonstrates deterministic business
+   logic, not a CRUD form.
+4. **Apply to an eligible drive** — one tap, appears instantly in the ATS tracker.
+5. **Application tracker** — walk the stepper through stages, venues and reporting times.
+6. **Switch to Placement Officer** — analytics dashboard, then drive creation wizard.
+7. **Applicants table** — filter by CGPA and stage, then **Export CSV** and show the native
+   share sheet. Ending on a real, exportable artefact is the strongest close.
+
+---
